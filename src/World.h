@@ -21,9 +21,15 @@ enum WorldType {
 };
 
 /* Maximum view distance (in blocks) used by infinite worlds. */
-/* Infinite worlds stream chunks in as the player moves, so an unbounded view
-   distance (e.g. 512) would require loading hundreds of thousands of chunks. */
-#define WORLD_INF_MAX_VIEWDIST 64
+/* Far-away terrain is rendered as a coarse LOD heightfield (see LodRenderer),
+   so the view distance can extend to the full range the game supports even
+   though full-resolution chunks are only streamed around the player. */
+#define WORLD_INF_MAX_VIEWDIST 4096
+
+/* Radius (in blocks) full-resolution voxel chunks are streamed around the
+   player at. Beyond this distance LodRenderer takes over, so this is kept
+   modest to keep chunk generation/VRAM usage bounded. */
+#define WORLD_INF_NEAR_DIST 80
 
 /* Unpacka an index into x,y,z (slow!) */
 #define World_Unpack(idx, x, y, z) x = idx % World.Width; z = (idx / World.Width) % World.Length; y = (idx / World.Width) / World.Length;

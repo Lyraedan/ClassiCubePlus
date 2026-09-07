@@ -19,6 +19,9 @@ struct Chunk;
 #define INF_SURFACE_MIN_Y (-20)
 #define INF_SURFACE_MAX_Y (44)
 
+/* Height at which (still) water fills the terrain. */
+#define INF_WATER_LEVEL 8
+
 /* Hard floor of the world. Everything at or below this Y is bedrock, so
    players cannot fall into the void and sink forever (which would make
    physics generate an endless column of chunks and run out of memory). */

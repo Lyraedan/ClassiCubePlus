@@ -10,6 +10,7 @@
 #include "Game.h"
 #include "Graphics.h"
 #include "InfiniteGen.h"
+#include "LodRenderer.h"
 #include "Platform.h"
 #include "TexturePack.h"
 #include "Utils.h"
@@ -571,11 +572,11 @@ static void CalcViewDists(void) {
 	buildDistSquared  = AdjustDist(Game_UserViewDistance);
 	renderDistSquared = AdjustDist(Game_ViewDistance);
 	if (World.Type == WORLD_INFINITE) {
-		/* Infinite worlds stream chunks in as the player moves; cap how far
-		   ahead chunks are built/loaded so an unbounded view distance does not
-		   require loading an impractical number of chunks. */
-		buildDistSquared  = AdjustDist(WORLD_INF_MAX_VIEWDIST);
-		renderDistSquared = AdjustDist(WORLD_INF_MAX_VIEWDIST);
+		/* Near chunks stream around the player within a modest radius, and the
+		   far-away terrain is handled by the LOD renderer instead. Keeping the
+		   voxel build radius small bounds chunk generation and VRAM usage. */
+		buildDistSquared  = AdjustDist(WORLD_INF_NEAR_DIST);
+		renderDistSquared = AdjustDist(Game_ViewDistance);
 	}
 }
 
@@ -881,6 +882,10 @@ static void Inf_RenderNormal(float delta) {
 	Gfx_SetAlphaTest(true);
 	Gfx_EnableMipmaps();
 
+	/* Far away terrain is drawn first, so the full-resolution chunks drawn
+	   afterwards correctly overdraw it. */
+	Lod_Render();
+
 	for (batch = 0; batch < MapRenderer_1DUsedCount; batch++) {
 		Atlas1D_Bind(batch);
 		for (i = 0; i < infRenderCount; i++) {
@@ -958,6 +963,8 @@ static void Inf_RenderTranslucent(float delta) {
 	Gfx_SetAlphaBlending(false);
 	Gfx_DepthOnlyRendering(true);
 
+	Lod_RenderTranslucentDepth();
+
 	for (batch = 0; batch < MapRenderer_1DUsedCount; batch++) {
 		for (i = 0; i < infRenderCount; i++) {
 			chunk = infRender[i];
@@ -993,6 +1000,7 @@ static void Inf_RenderTranslucent(float delta) {
 	Gfx_SetDepthWrite(false);
 
 	Gfx_EnableMipmaps();
+	Lod_RenderTranslucent();
 	for (batch = 0; batch < MapRenderer_1DUsedCount; batch++) {
 		Atlas1D_Bind(batch);
 		for (i = 0; i < infRenderCount; i++) {
@@ -1255,6 +1263,9 @@ static void Inf_UpdateChunks(float delta) {
 		Inf_SetDrawFlags(info, camCx, camCy, camCz);
 		infRender[infRenderCount++] = chunk;
 	}
+
+	/* Stream in/out and build the far-away terrain LOD. */
+	Lod_Update(delta);
 }
 
 static void Inf_FreeAll(void) {
@@ -1309,6 +1320,7 @@ void MapRenderer_RefreshChunk(int cx, int cy, int cz) {
 	struct ChunkInfo* chunk;
 	if (World.Type == WORLD_INFINITE) {
 		Inf_RefreshChunk(cx, cy, cz);
+		Lod_RefreshChunk(cx, cz);
 		return;
 	}
 	if (cx < 0 || cy < 0 || cz < 0 || cx >= World.ChunksX || cy >= World.ChunksY || cz >= World.ChunksZ) return;
@@ -1331,6 +1343,7 @@ void MapRenderer_OnBlockChanged(int x, int y, int z, BlockID block) {
 		Inf_RefreshChunk(cx, cy + 1, cz);
 		Inf_RefreshChunk(cx, cy, cz - 1);
 		Inf_RefreshChunk(cx, cy, cz + 1);
+		Lod_RefreshChunk(cx, cz);
 		return;
 	}
 
@@ -1344,6 +1357,7 @@ static void OnEnvVariableChanged(void* obj, int envVar) {
 	if (World.Type == WORLD_INFINITE) {
 		if (envVar == ENV_VAR_SUN_COLOR || envVar == ENV_VAR_SHADOW_COLOR) {
 			Inf_RefreshAll();
+			Lod_RefreshAll();
 		}
 		return;
 	}
@@ -1371,6 +1385,7 @@ static void OnTerrainAtlasChanged(void* obj) {
 	if (World.Type == WORLD_INFINITE) {
 		Inf_ReallocParts();
 		Inf_RefreshAll();
+		Lod_RefreshAll();
 	}
 	tilesPerAtlas = Atlas1D.TilesPerAtlas;
 	ResetPartFlags();
@@ -1382,6 +1397,7 @@ static void OnBlockDefinitionChanged(void* obj) {
 	if (World.Type == WORLD_INFINITE) {
 		Inf_ReallocParts();
 		Inf_RefreshAll();
+		Lod_RefreshAll();
 	}
 	ResetPartFlags();
 }
@@ -1397,12 +1413,17 @@ static void DeleteChunks_(void* obj) {
 			struct Chunk* chunk = ChunkStore_GetAt(i);
 			if (chunk->info) Inf_DeleteChunk(chunk);
 		}
+		Lod_OnContextLost();
 		return;
 	}
 	DeleteChunks();
 }
 static void Refresh_(void* obj) {
-	if (World.Type == WORLD_INFINITE) { Inf_RefreshAll(); return; }
+	if (World.Type == WORLD_INFINITE) {
+		Inf_RefreshAll();
+		Lod_OnContextLost();
+		return;
+	}
 	MapRenderer_Refresh();
 }
 
@@ -1410,6 +1431,7 @@ static void OnNewMap(void) {
 	Game.ChunkUpdates = 0;
 	infActive = false;
 	Inf_FreeAll();
+	Lod_OnNewMap();
 
 	if (World.Type == WORLD_INFINITE) return;
 	DeleteChunks();
@@ -1425,6 +1447,7 @@ static void OnNewMapLoaded(void) {
 		infActive = true;
 		lastCamPos = Vec3_BigPos();
 		CalcViewDists();
+		Lod_OnNewMapLoaded();
 		return;
 	}
 

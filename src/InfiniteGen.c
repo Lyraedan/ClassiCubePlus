@@ -16,8 +16,6 @@
 #define INF_BASE_HEIGHT 12
 /* Amplitude of the terrain surface variation. */
 #define INF_HEIGHT_AMP  32
-/* Height at which (still) water fills the terrain. */
-#define INF_WATER_LEVEL 8
 /* Height below which (still) lava fills the terrain. */
 #define INF_LAVA_LEVEL  -24
 /* Threshold above which 3D noise carves a cave. */

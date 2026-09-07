@@ -416,6 +416,7 @@
     <ClInclude Include="MapRenderer.h" />
     <ClInclude Include="ChunkStore.h" />
     <ClInclude Include="InfiniteGen.h" />
+    <ClInclude Include="LodRenderer.h" />
     <ClInclude Include="Options.h" />
     <ClInclude Include="Particle.h" />
     <ClInclude Include="BlockPhysics.h" />
@@ -621,6 +622,7 @@
     <ClCompile Include="MapRenderer.c" />
     <ClCompile Include="ChunkStore.c" />
     <ClCompile Include="InfiniteGen.c" />
+    <ClCompile Include="LodRenderer.c" />
     <ClCompile Include="Options.c" />
     <ClCompile Include="PackedCol.c" />
     <ClCompile Include="Particle.c" />

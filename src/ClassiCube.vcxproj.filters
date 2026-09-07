@@ -282,6 +282,9 @@
     <ClInclude Include="InfiniteGen.h">
       <Filter>Header Files\Rendering</Filter>
     </ClInclude>
+    <ClInclude Include="LodRenderer.h">
+      <Filter>Header Files\Rendering</Filter>
+    </ClInclude>
     <ClInclude Include="BlockPhysics.h">
       <Filter>Header Files\Blocks</Filter>
     </ClInclude>
@@ -495,6 +498,9 @@
       <Filter>Source Files\Map</Filter>
     </ClCompile>
     <ClCompile Include="InfiniteGen.c">
+      <Filter>Source Files\Map</Filter>
+    </ClCompile>
+    <ClCompile Include="LodRenderer.c">
       <Filter>Source Files\Map</Filter>
     </ClCompile>
     <ClCompile Include="BlockPhysics.c">
