@@ -1,3 +1,5 @@
+This is a fork of ClassiCube.
+
 ClassiCube is a custom Minecraft Classic compatible client written in C from scratch.<br>
 
 You can **download ClassiCube** [here](https://www.classicube.net/download/) and the very latest builds [here](https://www.classicube.net/nightlies/).
@@ -20,6 +22,12 @@ ClassiCube aims to replicate the 2009 Minecraft Classic client while offering **
 * Runs on Windows, macOS, Linux, Android, iOS, and in a web browser
 * Also runs on OpenBSD, FreeBSD, NetBSD, Solaris, Haiku, IRIX, SerenityOS
 * Although in various stages of early development, also runs on various consoles
+
+# What ClassiCubePlus is
+
+ClassiCubePlus is an experimental classicube extension that I want to build in my free time.
+
+* Adds infinite terrain
 
 </details>
 
