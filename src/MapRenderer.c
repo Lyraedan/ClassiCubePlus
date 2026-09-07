@@ -9,6 +9,7 @@
 #include "Funcs.h"
 #include "Game.h"
 #include "Graphics.h"
+#include "InfiniteGen.h"
 #include "Platform.h"
 #include "TexturePack.h"
 #include "Utils.h"
@@ -753,6 +754,11 @@ void MapRenderer_Update(float delta) {
 *#########################################################################################################################*/
 /* The finite renderer above uses a fixed grid of chunks. Infinite worlds instead
    stream chunks in/out around the camera using the ChunkStore. */
+/* Chunk layers above/below the camera to keep loaded while moving vertically.
+   The terrain surface only ever occupies layers [INF_SURFACE_MIN_Y/16,
+   INF_SURFACE_MAX_Y/16], so loading a full-height cube around the camera
+   wastes time on deep solid columns that are rarely (if ever) visible. */
+#define INF_VERT_SPAN 3
 static struct Chunk** infSorted;
 static struct Chunk** infRender;
 static cc_uint32* infDist;
@@ -830,6 +836,20 @@ static cc_bool Inf_HasData(struct Chunk* chunk) {
 		if (info->translucentParts[i].offset >= 0) return true;
 	}
 	return false;
+}
+
+/* Fully frees a chunk's render info: the vertex buffers plus the per-atlas
+   normal/translucent parts arrays allocated by Inf_ChunkInfoInit.
+   Registered as ChunkStore_FreeInfo so chunks evicted from the ChunkStore
+   do not leak the parts arrays. */
+static void Inf_FreeChunkInfo(struct Chunk* chunk) {
+	struct ChunkInfo* info = chunk->info;
+	if (!info) return;
+	Inf_DeleteChunk(chunk);
+	Mem_Free(info->normalParts);
+	Mem_Free(info->translucentParts);
+	Mem_Free(info);
+	chunk->info = NULL;
 }
 
 static void Inf_SortChunks(int left, int right) {
@@ -1026,13 +1046,22 @@ static void Inf_UpdateChunks(float delta) {
 	IVec3 camPos, camChunk;
 	int radius, range;
 	int cx, cy, cz, i, res, dx, dy, dz, distSqr, r;
+	int ox, oy, oz;
 	int r2 = buildDistSquared;
 	int margin = 32 * 16;
+	int dyFrom, dyTo;
+	int bx, by, bz;
 	struct Chunk* chunk;
 	struct ChunkInfo* info;
 	int camCx, camCy, camCz;
 	/* How many new chunks to generate per frame. */
 	int genBudget = 32;
+	/* Direction of movement for prioritising chunks in front of it. */
+	Vec2 rot;
+	Vec3 fwd;
+	cc_bool hasFwd;
+	int sweeps, sweep;
+	float dot;
 
 	chunksTarget += delta < CHUNK_TARGET_TIME ? 1 : -1;
 	Math_Clamp(chunksTarget, 4, maxChunkUpdates);
@@ -1045,61 +1074,135 @@ static void Inf_UpdateChunks(float delta) {
 	camCy = (camChunk.y << CHUNK_SHIFT) + HALF_CHUNK_SIZE;
 	camCz = (camChunk.z << CHUNK_SHIFT) + HALF_CHUNK_SIZE;
 
+	/* Stream terrain in the direction the player is actually moving, so the
+	   leading edge of new terrain is generated/meshed first even when
+	   strafing or walking backwards. When still, fall back to the camera
+	   orientation (so turning reveals terrain ahead of it). Horizontal motion
+	   only: vertical velocity (gravity, flying down) must not bias the
+	   horizontally-centre streaming. The raw velocity length does not matter,
+	   only the sign of the resulting dot products. */
+	hasFwd = Camera.Active != NULL;
+	if (hasFwd) {
+		Vec3 v;
+		struct LocalPlayer* p = Entities.CurPlayer;
+		rot = Camera.Active->GetOrientation();
+		fwd = Vec3_GetDirVector(rot.x, rot.y);
+		if (p) {
+			v = p->Base.Velocity;
+			v.y = 0.0f;
+			if (v.x * v.x + v.z * v.z > 1.0f) fwd = v;
+		}
+	}
+	sweeps = hasFwd ? 2 : 1;
+
 	radius = (int)(Math_SqrtF((float)buildDistSquared) / CHUNK_SIZE) + 1;
 	range  = radius + 1;
 
-	/* Pass 1: stream in new chunks nearest first, limited to a budget per frame
-	   so generating a large area doesn't stall the game. */
-	for (r = 0; r <= range && genBudget > 0; r++) {
-		for (dz = -r; dz <= r && genBudget > 0; dz++) {
-			for (dy = -r; dy <= r && genBudget > 0; dy++) {
-				for (dx = -r; dx <= r && genBudget > 0; dx++) {
-					/* Only chunks on the surface of this Chebyshev shell. */
-					if (Math_AbsI(dx) < r && Math_AbsI(dy) < r && Math_AbsI(dz) < r) continue;
-					cx = camChunk.x + dx; cy = camChunk.y + dy; cz = camChunk.z + dz;
-					if (ChunkStore_Find(cx, cy, cz)) continue;
+	/* Only consider chunk layers that the terrain surface can occupy, plus a
+	   camera-following window so flying/digging stays covered. Without this,
+	   every column is loaded up to ~2*range layers tall (including deep solid
+	   chunks that are the most expensive to generate and rarely visible). */
+	dyFrom = min(camChunk.y - INF_VERT_SPAN, INF_SURFACE_MIN_Y >> CHUNK_SHIFT);
+	dyTo   = max(camChunk.y + INF_VERT_SPAN, (INF_SURFACE_MAX_Y + (CHUNK_SIZE - 1)) >> CHUNK_SHIFT);
 
-					chunk = ChunkStore_Get(cx, cy, cz);
-					if (!chunk->info) Inf_ChunkInfoInit(chunk);
-					/* A new chunk appeared, so its neighbours may need rebuilding. */
-					Inf_RefreshChunk(cx - 1, cy, cz);
-					Inf_RefreshChunk(cx + 1, cy, cz);
-					Inf_RefreshChunk(cx, cy - 1, cz);
-					Inf_RefreshChunk(cx, cy + 1, cz);
-					Inf_RefreshChunk(cx, cy, cz - 1);
-					Inf_RefreshChunk(cx, cy, cz + 1);
-					genBudget--;
+	/* Pass 0: unload chunks that are too far away before generating new ones,
+	   so memory is freed before new allocations. ChunkStore_Remove frees the
+	   render info and vertex buffers via ChunkStore_FreeInfo. */
+	for (i = ChunkStore_GetCount() - 1; i >= 0; i--) {
+		int ddx, ddy, ddz, ddistSqr;
+		chunk = ChunkStore_GetAt(i);
+		ddx = (chunk->cx << CHUNK_SHIFT) + HALF_CHUNK_SIZE - camPos.x;
+		ddy = (chunk->cy << CHUNK_SHIFT) + HALF_CHUNK_SIZE - camPos.y;
+		ddz = (chunk->cz << CHUNK_SHIFT) + HALF_CHUNK_SIZE - camPos.z;
+		ddistSqr = ddx * ddx + ddy * ddy + ddz * ddz;
+		if (ddistSqr >= r2 + margin) ChunkStore_Remove(chunk->cx, chunk->cy, chunk->cz);
+	}
+
+	/* Pass 1: stream in new chunks, limited to a budget per frame so spawning a
+	   large area doesn't stall the game. Within each Chebyshev shell the front
+	   sweep (relative to movement direction) is processed before the back sweep,
+	   and generation is restricted to the build sphere so the same set of chunks
+	   that would soon be unloaded is not generated in the first place. */
+	for (r = 0; r <= range && genBudget > 0; r++) {
+		for (sweep = 0; sweep < sweeps && genBudget > 0; sweep++) {
+			for (dz = -r; dz <= r && genBudget > 0; dz++) {
+				for (dy = max(-r, dyFrom); dy <= min(r, dyTo) && genBudget > 0; dy++) {
+					for (dx = -r; dx <= r && genBudget > 0; dx++) {
+						/* Only chunks on the surface of this Chebyshev shell. */
+						if (Math_AbsI(dx) < r && Math_AbsI(dy) < r && Math_AbsI(dz) < r) continue;
+						cx = camChunk.x + dx; cy = camChunk.y + dy; cz = camChunk.z + dz;
+						bx = (cx << CHUNK_SHIFT) + HALF_CHUNK_SIZE - camPos.x;
+						by = (cy << CHUNK_SHIFT) + HALF_CHUNK_SIZE - camPos.y;
+						bz = (cz << CHUNK_SHIFT) + HALF_CHUNK_SIZE - camPos.z;
+						distSqr = bx * bx + by * by + bz * bz;
+
+						/* Only generate chunks within the build distance. */
+						if (distSqr > r2) continue;
+						if (hasFwd) {
+							dot = (float)bx * fwd.x + (float)by * fwd.y + (float)bz * fwd.z;
+							/* Sweep 0 handles the front hemisphere, sweep 1 the back. */
+							if ((sweep == 0) != (dot >= 0.0f)) continue;
+						}
+						if (ChunkStore_Find(cx, cy, cz)) continue;
+
+						chunk = ChunkStore_Get(cx, cy, cz);
+						if (!chunk) continue; /* chunk store at its max size */
+						if (!chunk->info) Inf_ChunkInfoInit(chunk);
+						/* A new chunk appeared, so its neighbours may need rebuilding. */
+						Inf_RefreshChunk(cx - 1, cy, cz);
+						Inf_RefreshChunk(cx + 1, cy, cz);
+						Inf_RefreshChunk(cx, cy - 1, cz);
+						Inf_RefreshChunk(cx, cy + 1, cz);
+						Inf_RefreshChunk(cx, cy, cz - 1);
+						Inf_RefreshChunk(cx, cy, cz + 1);
+						genBudget--;
+					}
 				}
 			}
 		}
 	}
 
-	/* Pass 2: build the meshes of dirty chunks within the build distance. */
-	for (cz = camChunk.z - range; cz <= camChunk.z + range; cz++) {
-		for (cy = camChunk.y - range; cy <= camChunk.y + range; cy++) {
-			for (cx = camChunk.x - range; cx <= camChunk.x + range; cx++) {
-				chunk = ChunkStore_Find(cx, cy, cz);
-				if (!chunk || !chunk->info) continue;
+	/* Pass 2: build the meshes of dirty chunks within the build distance.
+	   Uses the same expanding-shell, front-first order as Pass 1, since meshing
+	   is the usual bottleneck and the previous cz/cy/cx scan order spent the
+	   per-frame budget on arbitrary chunks instead of visible ones. */
+	for (r = 0; r <= range && chunkUpdates < chunksTarget; r++) {
+		for (sweep = 0; sweep < sweeps && chunkUpdates < chunksTarget; sweep++) {
+			for (oz = -r; oz <= r && chunkUpdates < chunksTarget; oz++) {
+				for (oy = max(-r, dyFrom); oy <= min(r, dyTo) && chunkUpdates < chunksTarget; oy++) {
+					for (ox = -r; ox <= r && chunkUpdates < chunksTarget; ox++) {
+						/* Only chunks on the surface of this Chebyshev shell. */
+						if (Math_AbsI(ox) < r && Math_AbsI(oy) < r && Math_AbsI(oz) < r) continue;
+						cx = camChunk.x + ox; cy = camChunk.y + oy; cz = camChunk.z + oz;
 
-				dx = (cx << CHUNK_SHIFT) + HALF_CHUNK_SIZE - camPos.x;
-				dy = (cy << CHUNK_SHIFT) + HALF_CHUNK_SIZE - camPos.y;
-				dz = (cz << CHUNK_SHIFT) + HALF_CHUNK_SIZE - camPos.z;
-				distSqr = dx * dx + dy * dy + dz * dz;
-				if (distSqr > r2) continue;
+						dx = (cx << CHUNK_SHIFT) + HALF_CHUNK_SIZE - camPos.x;
+						dy = (cy << CHUNK_SHIFT) + HALF_CHUNK_SIZE - camPos.y;
+						dz = (cz << CHUNK_SHIFT) + HALF_CHUNK_SIZE - camPos.z;
+						distSqr = dx * dx + dy * dy + dz * dz;
+						if (distSqr > r2) continue;
+						if (hasFwd) {
+							dot = (float)dx * fwd.x + (float)dy * fwd.y + (float)dz * fwd.z;
+							if ((sweep == 0) != (dot >= 0.0f)) continue;
+						}
 
-				info = chunk->info;
-				if (info->dirty && chunkUpdates < chunksTarget) {
-					Inf_DeleteChunk(chunk);
-					if (Builder_MakeChunk(info)) {
-						info->dirty = false;
-						info->empty = info->allAir || !Inf_HasData(chunk);
-						info->noData = info->empty;
-						chunkUpdates++;
-						Game.ChunkUpdates++;
-					} else {
-						/* Failed to allocate vertex buffer; retry next frame. */
-						info->noData = true;
-						info->empty = true;
+						chunk = ChunkStore_Find(cx, cy, cz);
+						if (!chunk || !chunk->info) continue;
+
+						info = chunk->info;
+						if (info->dirty) {
+							Inf_DeleteChunk(chunk);
+							if (Builder_MakeChunk(info)) {
+								info->dirty = false;
+								info->empty = info->allAir || !Inf_HasData(chunk);
+								info->noData = info->empty;
+								chunkUpdates++;
+								Game.ChunkUpdates++;
+							} else {
+								/* Failed to allocate vertex buffer; retry next frame. */
+								info->noData = true;
+								info->empty = true;
+							}
+						}
 					}
 				}
 			}
@@ -1115,7 +1218,6 @@ static void Inf_UpdateChunks(float delta) {
 		dz = (chunk->cz << CHUNK_SHIFT) + HALF_CHUNK_SIZE - camPos.z;
 		distSqr = dx * dx + dy * dy + dz * dz;
 		if (distSqr >= r2 + margin) {
-			Inf_DeleteChunk(chunk);
 			ChunkStore_Remove(chunk->cx, chunk->cy, chunk->cz);
 		}
 	}
@@ -1160,7 +1262,7 @@ static void Inf_FreeAll(void) {
 	for (i = 0; i < ChunkStore_GetCount(); i++) {
 		struct Chunk* chunk = ChunkStore_GetAt(i);
 		if (chunk->info) {
-			Inf_DeleteChunk(chunk);
+			Inf_FreeChunkInfo(chunk);
 		}
 	}
 	Mem_Free(infSorted);
@@ -1194,11 +1296,7 @@ static void Inf_ReallocParts(void) {
 	for (i = 0; i < ChunkStore_GetCount(); i++) {
 		struct Chunk* chunk = ChunkStore_GetAt(i);
 		if (!chunk->info) continue;
-		Inf_DeleteChunk(chunk);
-		Mem_Free(chunk->info->normalParts);
-		Mem_Free(chunk->info->translucentParts);
-		Mem_Free(chunk->info);
-		chunk->info = NULL;
+		Inf_FreeChunkInfo(chunk);
 		Inf_ChunkInfoInit(chunk);
 	}
 }
@@ -1353,6 +1451,9 @@ static void OnInit(void) {
 	Event_Register_(&GfxEvents.ProjectionChanged,   NULL, OnVisibilityChanged);
 	Event_Register_(&GfxEvents.ContextLost,         NULL, DeleteChunks_);
 	Event_Register_(&GfxEvents.ContextRecreated,    NULL, Refresh_);
+
+	/* ChunkStore frees render info through MapRenderer, since it owns it. */
+	ChunkStore_FreeInfo = Inf_FreeChunkInfo;
 
 	/* This = 87 fixes map being invisible when no textures */
 	MapRenderer_1DUsedCount = 87; /* Atlas1D_UsedAtlasesCount(); */

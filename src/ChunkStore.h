@@ -10,6 +10,12 @@ Each chunk holds a 16x16x16 array of blocks, and chunks are stored in a
 hash table keyed by their (cx,cy,cz) chunk coordinates.
 Copyright 2014-2025 ClassiCube | Licensed under BSD-3
 */
+
+/* Absolute upper bound on the number of chunks that can be loaded at once.
+   A safety net so out-of-control chunk generation (e.g. physics probing
+   corrupted coordinates) can never exhaust memory. ChunkStore_Get returns
+   NULL once this limit is reached; callers must handle that. */
+#define CHUNKSTORE_MAX_CHUNKS 4096
 struct ChunkInfo;
 
 /* A single 16x16x16 chunk of blocks. */
@@ -28,6 +34,12 @@ struct Chunk {
 /* Set to NULL if no generation is to be performed. */
 typedef void (*ChunkStore_GenFunc)(struct Chunk* chunk, int cx, int cy, int cz);
 CC_VAR extern ChunkStore_GenFunc ChunkStore_Generator;
+
+/* Called to free the render info of a chunk being removed. */
+/* Render info is owned by the renderer (MapRenderer), which must free any
+   buffers it allocated for the chunk (vertex buffers, per-atlas part arrays). */
+typedef void (*ChunkStore_FreeInfoFunc)(struct Chunk* chunk);
+CC_VAR extern ChunkStore_FreeInfoFunc ChunkStore_FreeInfo;
 
 /* Initialises the chunk store. */
 void ChunkStore_Init(void);

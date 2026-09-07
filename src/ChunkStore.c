@@ -8,6 +8,7 @@
    Copyright 2014-2025 ClassiCube | Licensed under BSD-3 */
 
 ChunkStore_GenFunc ChunkStore_Generator;
+ChunkStore_FreeInfoFunc ChunkStore_FreeInfo;
 
 /* Open-addressing hash table of chunks. */
 typedef struct ChunkEntry_ {
@@ -109,8 +110,12 @@ void ChunkStore_Clear(void) {
 	int i;
 	if (!entries) return;
 	for (i = 0; i < orderCount; i++) {
-		if (order[i]->info) Mem_Free(order[i]->info);
-		Mem_Free(order[i]);
+		struct Chunk* chunk = order[i];
+		if (chunk->info) {
+			if (ChunkStore_FreeInfo) ChunkStore_FreeInfo(chunk);
+			else Mem_Free(chunk->info);
+		}
+		Mem_Free(chunk);
 	}
 	orderCount = 0;
 	Table_Rebuild();
@@ -142,6 +147,7 @@ struct Chunk* ChunkStore_Find(int cx, int cy, int cz) {
 struct Chunk* ChunkStore_Get(int cx, int cy, int cz) {
 	struct Chunk* chunk = ChunkStore_Find(cx, cy, cz);
 	if (chunk) return chunk;
+	if (count >= CHUNKSTORE_MAX_CHUNKS) return NULL;
 
 	chunk = (struct Chunk*)Mem_AllocCleared(1, sizeof(struct Chunk), "chunk");
 	chunk->cx = cx; chunk->cy = cy; chunk->cz = cz;
@@ -160,7 +166,10 @@ void ChunkStore_Remove(int cx, int cy, int cz) {
 
 	Order_Remove(chunk);
 	Table_Remove(chunk);
-	if (chunk->info) Mem_Free(chunk->info);
+	if (chunk->info) {
+		if (ChunkStore_FreeInfo) ChunkStore_FreeInfo(chunk);
+		else Mem_Free(chunk->info);
+	}
 	Mem_Free(chunk);
 }
 
@@ -178,7 +187,9 @@ BlockID ChunkStore_GetBlock(int x, int y, int z) {
 
 BlockID ChunkStore_GetBlockEnsure(int x, int y, int z) {
 	struct Chunk* c = ChunkStore_Get(x >> CHUNK_SHIFT, y >> CHUNK_SHIFT, z >> CHUNK_SHIFT);
-	int i = ChunkStore_PackLocal(x, y, z);
+	int i;
+	if (!c) return BLOCK_AIR;
+	i = ChunkStore_PackLocal(x, y, z);
 #ifdef EXTENDED_BLOCKS
 	return (BlockID)(c->blocks[i] | (c->blocks2[i] << 8));
 #else
@@ -188,7 +199,9 @@ BlockID ChunkStore_GetBlockEnsure(int x, int y, int z) {
 
 void ChunkStore_SetBlock(int x, int y, int z, BlockID block) {
 	struct Chunk* c = ChunkStore_Get(x >> CHUNK_SHIFT, y >> CHUNK_SHIFT, z >> CHUNK_SHIFT);
-	int i = ChunkStore_PackLocal(x, y, z);
+	int i;
+	if (!c) return;
+	i = ChunkStore_PackLocal(x, y, z);
 	c->blocks[i] = (BlockRaw)block;
 #ifdef EXTENDED_BLOCKS
 	c->blocks2[i] = (BlockRaw)(block >> 8);

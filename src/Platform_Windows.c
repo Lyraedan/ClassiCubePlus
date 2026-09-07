@@ -82,6 +82,7 @@ void* Mem_TryAllocCleared(cc_uint32 numElems, cc_uint32 elemsSize) {
 
 void* Mem_TryRealloc(void* mem, cc_uint32 numElems, cc_uint32 elemsSize) {
 	cc_uint32 size = CalcMemSize(numElems, elemsSize);
+	if (!mem) return HeapAlloc(heap, 0, size); /* HeapReAlloc does not accept NULL, unlike realloc */
 	return size ? HeapReAlloc(heap, 0, mem, size) : NULL;
 }
 

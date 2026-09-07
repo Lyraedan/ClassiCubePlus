@@ -2,12 +2,14 @@
 #include "ChunkStore.h"
 #include "World.h"
 #include "ExtMath.h"
+#include "Funcs.h"
 #include "BlockID.h"
 
 /* Generates terrain for an infinite world, one 16x16x16 chunk at a time.
    Terrain is deterministic from the world seed and chunk coordinates, so it is
-   continuous across chunk boundaries. There is no bedrock layer: terrain extends
-   downwards indefinitely and air upwards indefinitely.
+   continuous across chunk boundaries. From the hard floor (INF_FLOOR_Y) upwards
+   it extends to the sky; below the floor there is solid bedrock, so there is no
+   bottomless void to fall into.
    Copyright 2014-2025 ClassiCube | Licensed under BSD-3 */
 
 /* Base height of the terrain surface around which noise varies. */
@@ -144,11 +146,15 @@ void InfiniteGen_GenerateChunk(struct Chunk* chunk, int cx, int cy, int cz) {
 	int x1 = cx << CHUNK_SHIFT, y1 = cy << CHUNK_SHIFT, z1 = cz << CHUNK_SHIFT;
 	int x, y, z, i = 0;
 	int heights[CHUNK_SIZE * CHUNK_SIZE];
+	int maxH = INF_SURFACE_MIN_Y, h;
+	cc_bool rowCarves;
 
 	/* Precompute the surface height of each column, as it does not depend on y. */
 	for (z = 0; z < CHUNK_SIZE; z++) {
 		for (x = 0; x < CHUNK_SIZE; x++) {
-			heights[z * CHUNK_SIZE + x] = Inf_GetSurfaceHeight(x1 + x, z1 + z);
+			h = Inf_GetSurfaceHeight(x1 + x, z1 + z);
+			heights[z * CHUNK_SIZE + x] = h;
+			maxH = max(maxH, h);
 		}
 	}
 
@@ -156,6 +162,10 @@ void InfiniteGen_GenerateChunk(struct Chunk* chunk, int cx, int cy, int cz) {
 	   must iterate y outer, then z, then x to match the block storage layout. */
 	for (y = 0; y < CHUNK_SIZE; y++) {
 		int yc = y1 + y;
+		/* Cave carving is only possible below the surface of some column in
+		   this chunk. Rows above the highest column's surface can never carve,
+		   so the 3D noise can be skipped for the whole row. */
+		rowCarves = (yc + 2) < maxH;
 		for (z = 0; z < CHUNK_SIZE; z++) {
 			int zc = z1 + z;
 			for (x = 0; x < CHUNK_SIZE; x++) {
@@ -163,7 +173,10 @@ void InfiniteGen_GenerateChunk(struct Chunk* chunk, int cx, int cy, int cz) {
 				int h  = heights[z * CHUNK_SIZE + x];
 				BlockRaw block;
 
-				if (yc < h) {
+				if (yc <= INF_FLOOR_Y) {
+					/* Hard floor of the world; never carved into. */
+					block = BLOCK_BEDROCK;
+				} else if (yc < h) {
 					/* Below the surface, solid terrain. */
 					if (yc >= h - 1) {
 						block = (h < INF_WATER_LEVEL) ? BLOCK_SAND : BLOCK_GRASS;
@@ -176,7 +189,7 @@ void InfiniteGen_GenerateChunk(struct Chunk* chunk, int cx, int cy, int cz) {
 					}
 
 					/* Carve caves below the surface with 3D noise. */
-					if (yc < h - 2 && Inf_Fbm3D((float)xc * 0.06f, (float)yc * 0.06f,
+					if (yc < h - 2 && rowCarves && Inf_Fbm3D((float)xc * 0.06f, (float)yc * 0.06f,
 							(float)zc * 0.06f, 2, seed + 9) > INF_CAVE_THRESHOLD) {
 						block = BLOCK_AIR;
 					}

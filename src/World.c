@@ -182,7 +182,13 @@ void World_SetBlock(int x, int y, int z, BlockID block) {
 #endif
 
 BlockID World_GetPhysicsBlock(int x, int y, int z) {
-	if (World.Type == WORLD_INFINITE) return ChunkStore_GetBlockEnsure(x, y, z);
+	if (World.Type == WORLD_INFINITE) {
+		/* Never generate chunks below the bedrock floor, otherwise falling
+		   (or noclipping) through the void would create an endless column of
+		   chunks and eventually run out of memory. */
+		if (y < INF_FLOOR_Y) return BLOCK_AIR;
+		return ChunkStore_GetBlockEnsure(x, y, z);
+	}
 	if (y < 0 || !World_ContainsXZ(x, z)) return BLOCK_BEDROCK;
 	if (y >= World.Height) return BLOCK_AIR;
 

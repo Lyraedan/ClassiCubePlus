@@ -414,6 +414,8 @@
     <ClInclude Include="Lighting.h" />
     <ClInclude Include="Generator.h" />
     <ClInclude Include="MapRenderer.h" />
+    <ClInclude Include="ChunkStore.h" />
+    <ClInclude Include="InfiniteGen.h" />
     <ClInclude Include="Options.h" />
     <ClInclude Include="Particle.h" />
     <ClInclude Include="BlockPhysics.h" />
@@ -617,6 +619,8 @@
     <ClCompile Include="Lighting.c" />
     <ClCompile Include="Entity.c" />
     <ClCompile Include="MapRenderer.c" />
+    <ClCompile Include="ChunkStore.c" />
+    <ClCompile Include="InfiniteGen.c" />
     <ClCompile Include="Options.c" />
     <ClCompile Include="PackedCol.c" />
     <ClCompile Include="Particle.c" />
